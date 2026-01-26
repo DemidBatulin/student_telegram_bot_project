@@ -1,63 +1,76 @@
-# onec_client.py
 import requests
-from typing import Optional
+from urllib.parse import urljoin
 
-# Адрес HTTP-сервиса 1С
-ONEC_BASE_URL = "http://localhost/StudentBotAPI/hs"
-
-# Если в 1С включена авторизация
-ONEC_USER = "bot_user"
-ONEC_PASSWORD = "password"
+from config import ONEC_BASE_URL, ONEC_USER, ONEC_PASSWORD, ONEC_TIMEOUT
 
 
-def _call_1c(method: str, payload: dict) -> Optional[dict]:
+def _call_1c(method: str, params: dict | None = None) -> dict:
     """
-    Универсальный вызов HTTP-сервиса 1С
+    Унифицированный вызов HTTP-сервиса 1С.
+    ONEC_BASE_URL должен указывать на базовый адрес сервиса, например:
+    http://localhost/yourbase/hs/StudentInfo/
     """
-    url = f"{ONEC_BASE_URL}/{method}"
+    if not ONEC_BASE_URL:
+        return {"success": False, "error": "ONEC_BASE_URL is not set"}
+
+    url = urljoin(ONEC_BASE_URL.rstrip("/") + "/", method.lstrip("/"))
+
     try:
-        response = requests.post(
+        resp = requests.get(
             url,
-            json=payload,
-            auth=(ONEC_USER, ONEC_PASSWORD),
-            timeout=10
+            params=params or {},
+            auth=(ONEC_USER, ONEC_PASSWORD) if ONEC_USER else None,
+            timeout=ONEC_TIMEOUT,
         )
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        print(f"[1C ERROR] {method}: {e}")
-        return None
+
+        # 1С часто возвращает JSON строкой
+        if resp.status_code != 200:
+            return {
+                "success": False,
+                "error": f"HTTP {resp.status_code}",
+                "details": resp.text[:300],
+                "url": url,
+            }
+
+        try:
+            data = resp.json()
+        except Exception:
+            return {
+                "success": False,
+                "error": "Invalid JSON from 1C",
+                "details": resp.text[:300],
+                "url": url,
+            }
+
+        # если 1С вернула {"error": "..."} — пробрасываем
+        if isinstance(data, dict) and data.get("error"):
+            return {"success": False, "error": data.get("error"), "data": data}
+
+        return {"success": True, "data": data}
+
+    except requests.exceptions.RequestException as e:
+        return {"success": False, "error": "Connection error", "details": str(e), "url": url}
 
 
-def get_student_debt(student_id: str) -> Optional[dict]:
-    """
-    Получение задолженности студента из 1С
-    """
-    return _call_1c(
-        "GetStudentDebt",
-        {"StudentID": student_id}
-    )
+# ---------------- PUBLIC API for bot ----------------
+
+def get_debt(student_code: str) -> dict:
+    # В 1С ты добавила метод GetDebt — используем его
+    return _call_1c("GetDebt", {"student_id": student_code})
 
 
-def get_student_schedule(student_id: str) -> Optional[dict]:
-    """
-    Получение расписания студента из 1С
-    """
-    return _call_1c(
-        "GetStudentSchedule",
-        {"StudentID": student_id}
-    )
+def get_schedule(student_code: str) -> dict:
+    return _call_1c("GetSchedule", {"student_id": student_code})
 
 
-def register_request_in_1c(request_id: int, student_id: str, request_type: str):
-    """
-    Регистрация обращения в 1С
-    """
-    return _call_1c(
-        "RegisterRequest",
-        {
-            "RequestID": request_id,
-            "StudentID": student_id,
-            "RequestType": request_type
-        }
-    )
+def get_progress(student_code: str) -> dict:
+    return _call_1c("GetProgress", {"student_id": student_code})
+
+
+def get_attendance(student_code: str) -> dict:
+    return _call_1c("GetAttendance", {"student_id": student_code})
+
+
+def register_student(student_code: str, telegram_id: int) -> dict:
+    # если у тебя в 1С есть RegisterStudent
+    return _call_1c("RegisterStudent", {"student_id": student_code, "tg_id": telegram_id})
